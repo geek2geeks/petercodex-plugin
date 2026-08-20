@@ -1,0 +1,38 @@
+{
+  "name": "petercodex-plugin",
+  "version": "0.1.0",
+  "description": "Use OpenAI Codex as a supervised coding worker with durable plan, execute, and review phases.",
+  "author": {
+    "name": "geek2geeks",
+    "url": "https://github.com/geek2geeks"
+  },
+  "homepage": "https://github.com/geek2geeks/petercodex-plugin",
+  "repository": "https://github.com/geek2geeks/petercodex-plugin",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "coding-agent",
+    "plan",
+    "execution",
+    "review",
+    "orchestration"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "PeterCodex Plugin",
+    "shortDescription": "Plan, execute, and review with Codex.",
+    "longDescription": "Delegates coding work to OpenAI Codex through explicit plan, execute, and review phases with durable session IDs, sandbox transitions, Git-state drift detection, structured evidence, and timeout-safe reconciliation.",
+    "developerName": "geek2geeks",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/geek2geeks/petercodex-plugin",
+    "defaultPrompt": [
+      "Use PeterCodex to plan this coding task.",
+      "Execute the approved PeterCodex plan.",
+      "Review the PeterCodex implementation."
+    ]
+  }
+}

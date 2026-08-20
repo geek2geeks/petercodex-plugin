@@ -1,0 +1,20 @@
+{
+  "name": "petercodex",
+  "interface": {
+    "displayName": "PeterCodex"
+  },
+  "plugins": [
+    {
+      "name": "petercodex-plugin",
+      "source": {
+        "source": "local",
+        "path": "./plugins/petercodex-plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
