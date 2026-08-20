@@ -127,7 +127,9 @@ If another execution is needed after an ambiguous timeout, make that a deliberat
 
 Plan accepts `--model <model>` when the user explicitly requests a model. The persisted session is then resumed for execution. Omit the model when no project/user requirement exists so Codex can use the configured default.
 
-PeterCodex is compatible with Codex local/OSS providers when the user's Codex configuration and model support the required agent behavior. Do not silently substitute a requested model or provider.
+PeterCodex supports both Codex built-in local providers (`--local-provider ollama|lmstudio`) and per-run OpenAI-compatible providers. For ProxyCLI/LiteLLM-style gateways, pass `--provider-id`, `--provider-base-url`, `--provider-api-key-env`, and `--provider-wire-api responses|chat`. Persist only the environment-variable name; never write API-key values into the repository, run state, prompts, or evidence.
+
+Execute and Review reuse the provider/model stored by Plan. Do not silently substitute a requested model or provider. If a provider returns fenced JSON instead of populating Codex's structured-output file, PeterCodex may normalize only the final agent message after validating that it is a JSON object with all required keys; all Git/acceptance evidence gates still apply.
 
 ## Delegation prompt contract
 

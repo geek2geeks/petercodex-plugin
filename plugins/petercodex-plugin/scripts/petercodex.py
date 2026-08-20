@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable, NamedTuple
 
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.1"
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_DIR = PLUGIN_ROOT / "schemas"
 DEFAULT_HOME = Path(os.environ.get("PETERCODEX_HOME", Path.home() / ".petercodex"))
@@ -150,6 +150,7 @@ def run_process(
     invocation = build_invocation(executable, args)
     kwargs: dict[str, Any] = {
         "cwd": str(cwd) if cwd else None,
+        "stdin": subprocess.DEVNULL,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
@@ -434,12 +435,71 @@ def save_process_evidence(run_dir: Path, phase: str, result: ProcessResult) -> t
     return events, invalid_lines
 
 
-def validate_structured_result(path: Path, required_keys: set[str]) -> dict[str, Any]:
-    value = load_json(path)
+def validate_structured_value(value: Any, required_keys: set[str], source: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise PeterCodexError(f"Structured result from {source} is not a JSON object")
     missing = sorted(required_keys - set(value.keys()))
     if missing:
-        raise PeterCodexError(f"Structured result {path} is missing required keys: {', '.join(missing)}")
+        raise PeterCodexError(f"Structured result from {source} is missing required keys: {', '.join(missing)}")
     return value
+
+
+def validate_structured_result(path: Path, required_keys: set[str]) -> dict[str, Any]:
+    return validate_structured_value(load_json(path), required_keys, str(path))
+
+
+def last_agent_message(events: Iterable[dict[str, Any]]) -> str | None:
+    messages: list[str] = []
+    for event in events:
+        if event.get("type") != "item.completed":
+            continue
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+            messages.append(item["text"])
+    return messages[-1] if messages else None
+
+
+def parse_structured_agent_message(text: str) -> dict[str, Any]:
+    candidate = text.strip()
+    if candidate.startswith("```"):
+        first_newline = candidate.find("\n")
+        last_fence = candidate.rfind("```")
+        if first_newline >= 0 and last_fence > first_newline:
+            candidate = candidate[first_newline + 1:last_fence].strip()
+    try:
+        value = json.loads(candidate)
+    except json.JSONDecodeError:
+        first_brace = candidate.find("{")
+        last_brace = candidate.rfind("}")
+        if first_brace < 0 or last_brace <= first_brace:
+            raise PeterCodexError("Agent message did not contain a JSON object")
+        try:
+            value = json.loads(candidate[first_brace:last_brace + 1])
+        except json.JSONDecodeError as exc:
+            raise PeterCodexError(f"Agent message JSON fallback failed: {exc}") from exc
+    if not isinstance(value, dict):
+        raise PeterCodexError("Agent message structured fallback is not a JSON object")
+    return value
+
+
+def load_structured_result(
+    path: Path,
+    events: Iterable[dict[str, Any]],
+    required_keys: set[str],
+) -> dict[str, Any]:
+    try:
+        return validate_structured_result(path, required_keys)
+    except PeterCodexError as file_error:
+        message = last_agent_message(events)
+        if not message:
+            raise file_error
+        value = validate_structured_value(
+            parse_structured_agent_message(message),
+            required_keys,
+            "last agent_message fallback",
+        )
+        atomic_write_json(path, value)
+        return value
 
 
 def state_path(home: Path, run_id: str) -> Path:
@@ -453,13 +513,74 @@ def load_state(home: Path, run_id: str) -> tuple[Path, dict[str, Any]]:
     return path.parent, load_json(path)
 
 
-def codex_provider_args(model: str | None, local_provider: str | None) -> list[str]:
+def codex_provider_args(
+    model: str | None,
+    local_provider: str | None = None,
+    provider: dict[str, str] | None = None,
+) -> list[str]:
+    if local_provider and provider:
+        raise PeterCodexError("--local-provider cannot be combined with a custom model provider")
+
     args: list[str] = []
     if local_provider:
         args.extend(["-c", f"model_provider={json.dumps(local_provider)}"])
+    elif provider:
+        provider_id = provider.get("id", "").strip()
+        base_url = provider.get("base_url", "").strip()
+        api_key_env = provider.get("api_key_env", "").strip()
+        wire_api = provider.get("wire_api", "responses").strip()
+        if not provider_id or not provider_id.replace("_", "").isalnum():
+            raise PeterCodexError("Custom provider id must contain only letters, numbers, and underscores")
+        if not base_url:
+            raise PeterCodexError("Custom provider requires a base URL")
+        if wire_api not in {"responses", "chat"}:
+            raise PeterCodexError("Custom provider wire_api must be 'responses' or 'chat'")
+        if api_key_env and not os.environ.get(api_key_env):
+            raise PeterCodexError(f"Custom provider API-key environment variable is not set: {api_key_env}")
+
+        prefix = f"model_providers.{provider_id}"
+        args.extend(
+            [
+                "-c",
+                f"model_provider={json.dumps(provider_id)}",
+                "-c",
+                f"{prefix}.name={json.dumps(provider.get('name') or provider_id)}",
+                "-c",
+                f"{prefix}.base_url={json.dumps(base_url)}",
+                "-c",
+                f"{prefix}.wire_api={json.dumps(wire_api)}",
+                "-c",
+                f"{prefix}.requires_openai_auth=false",
+            ]
+        )
+        if api_key_env:
+            args.extend(["-c", f"{prefix}.env_key={json.dumps(api_key_env)}"])
     if model:
         args.extend(["-m", model])
     return args
+
+
+def provider_from_plan_args(args: argparse.Namespace) -> dict[str, str] | None:
+    supplied = any(
+        [
+            args.provider_id,
+            args.provider_name,
+            args.provider_base_url,
+            args.provider_api_key_env,
+            args.provider_wire_api,
+        ]
+    )
+    if not supplied:
+        return None
+    if not args.provider_id or not args.provider_base_url:
+        raise PeterCodexError("Custom provider requires --provider-id and --provider-base-url")
+    return {
+        "id": args.provider_id,
+        "name": args.provider_name or args.provider_id,
+        "base_url": args.provider_base_url,
+        "api_key_env": args.provider_api_key_env or "",
+        "wire_api": args.provider_wire_api or "responses",
+    }
 
 
 def codex_version(timeout_seconds: int = 20) -> str | None:
@@ -513,15 +634,6 @@ Execution rules:
 """
 
 
-def review_prompt(objective: str) -> str:
-    return f"""Independently review the current uncommitted implementation for this objective:
-
-{objective}
-
-Prioritize correctness, regressions, security boundaries, missing tests, and violations of repository instructions. Do not edit files. Report actionable findings with file references when possible. If no material issue is found, say so explicitly.
-"""
-
-
 def cmd_doctor(args: argparse.Namespace) -> int:
     report: dict[str, Any] = {
         "petercodex_version": PLUGIN_VERSION,
@@ -551,6 +663,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 def cmd_plan(args: argparse.Namespace) -> int:
     workspace = canonical_path(args.workspace)
     baseline = git_snapshot(workspace)
+    provider = provider_from_plan_args(args)
     run_id = make_run_id()
     run_dir = args.home / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -569,6 +682,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
         "objective_sha256": sha256_text(args.prompt),
         "model": args.model,
         "local_provider": args.local_provider,
+        "provider": provider,
         "codex_version": codex_version(),
         "plan_baseline": baseline,
         "session_id": None,
@@ -589,7 +703,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
         "--output-schema",
         str(SCHEMA_DIR / "plan-result.schema.json"),
     ]
-    codex_args.extend(codex_provider_args(args.model, args.local_provider))
+    codex_args.extend(codex_provider_args(args.model, args.local_provider, provider))
     codex_args.append(plan_prompt(args.prompt))
 
     result = run_codex(codex_args, cwd=workspace, timeout_seconds=args.timeout_minutes * 60)
@@ -622,8 +736,9 @@ def cmd_plan(args: argparse.Namespace) -> int:
         return EXIT_PLAN_FAILED
 
     try:
-        structured = validate_structured_result(
+        structured = load_structured_result(
             plan_result_path,
+            events,
             {"summary", "assumptions", "steps", "validation", "risks", "ready_to_execute"},
         )
     except PeterCodexError as exc:
@@ -688,6 +803,7 @@ def cmd_execute(args: argparse.Namespace) -> int:
         *codex_provider_args(
             str(state["model"]) if state.get("model") else None,
             str(state["local_provider"]) if state.get("local_provider") else None,
+            state.get("provider") if isinstance(state.get("provider"), dict) else None,
         ),
         "-c",
         'sandbox_mode="workspace-write"',
@@ -730,8 +846,9 @@ def cmd_execute(args: argparse.Namespace) -> int:
         return EXIT_EXECUTION_FAILED
 
     try:
-        structured = validate_structured_result(
+        structured = load_structured_result(
             execute_result_path,
+            events,
             {"summary", "files_changed", "commands", "tests", "acceptance_criteria", "risks"},
         )
     except PeterCodexError as exc:
@@ -793,13 +910,18 @@ def cmd_execute(args: argparse.Namespace) -> int:
 def cmd_review(args: argparse.Namespace) -> int:
     run_dir, state = load_state(args.home, args.run_id)
     state_file = run_dir / "state.json"
-    if state.get("state") not in {"EXECUTED", "EXECUTED_WITH_HEAD_CHANGE", "REVIEWED"}:
+    current_state = state.get("state")
+    reviewable_states = {"EXECUTED", "EXECUTED_WITH_HEAD_CHANGE", "REVIEWED"}
+    if current_state == "REVIEW_FAILED" and state.get("pre_review_state") in reviewable_states:
+        current_state = state.get("pre_review_state")
+    if current_state not in reviewable_states:
         raise PeterCodexError(f"Run {args.run_id} cannot be reviewed from state {state.get('state')}")
     workspace = canonical_path(state["workspace"])
     review_result_path = run_dir / "review-result.txt"
 
     review_model = args.model or state.get("model")
     local_provider = state.get("local_provider")
+    provider = state.get("provider") if isinstance(state.get("provider"), dict) else None
     codex_args = [
         "exec",
         "review",
@@ -807,6 +929,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         *codex_provider_args(
             str(review_model) if review_model else None,
             str(local_provider) if local_provider else None,
+            provider,
         ),
         "-c",
         'sandbox_mode="read-only"',
@@ -815,10 +938,11 @@ def cmd_review(args: argparse.Namespace) -> int:
         "--json",
         "-o",
         str(review_result_path),
-        review_prompt(state["objective"]),
     ]
 
-    previous_state = state.get("state")
+    previous_state = current_state
+    for stale_key in ("review_terminal_event", "review_finished_at", "returncode"):
+        state.pop(stale_key, None)
     state["state"] = "REVIEW_RUNNING"
     state["review_started_at"] = utc_now()
     state["updated_at"] = utc_now()
@@ -900,7 +1024,16 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument(
         "--local-provider",
         choices=["ollama", "lmstudio"],
-        help="Use Codex OSS mode with a local provider; the provider is persisted for Execute/Review.",
+        help="Use a built-in Codex local provider; persisted for Execute/Review.",
+    )
+    plan.add_argument("--provider-id", help="Custom Codex model-provider id, for example proxycli.")
+    plan.add_argument("--provider-name", help="Optional display name for the custom provider.")
+    plan.add_argument("--provider-base-url", help="OpenAI-compatible base URL, typically ending in /v1.")
+    plan.add_argument("--provider-api-key-env", help="Environment variable containing the provider API key; the key itself is never persisted.")
+    plan.add_argument(
+        "--provider-wire-api",
+        choices=["responses", "chat"],
+        help="Custom provider protocol. Defaults to responses.",
     )
     plan.add_argument("--timeout-minutes", type=int, default=20)
     plan.set_defaults(func=cmd_plan)

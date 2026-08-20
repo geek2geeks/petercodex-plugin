@@ -13,8 +13,10 @@ A robust coding-agent handoff needs more than a prompt:
 - **Execution is bounded.** The resumed turn switches to `workspace-write`, never to full-access.
 - **Stale plans are blocked.** PeterCodex records Git HEAD plus a digest of staged, unstaged, and untracked state; execution refuses if the repository changed after planning unless drift is explicitly accepted.
 - **Timeout is UNKNOWN.** A timeout is never silently converted into failure and never triggers an automatic retry.
-- **Results are structured.** Plan and execution turns use JSON schemas and preserve the complete Codex JSONL stream plus stderr.
+- **Results are structured.** Plan and execution turns use JSON schemas and preserve the complete Codex JSONL stream plus stderr. For compatible third-party providers that return fenced JSON instead of populating Codex's output file, PeterCodex validates and normalizes only the final JSON agent message.
+- **Execution claims are reconciled.** On a clean execution baseline, reported `files_changed` must exactly match Git-observed changed paths, and all acceptance criteria/tests must carry passing evidence.
 - **Review is independent.** `codex exec review --uncommitted` runs as a separate read-only pass.
+- **OpenAI-compatible providers are first-class.** A run can persist a custom `model_provider` (for example ProxyCLI/LiteLLM) using only a base URL and an API-key environment-variable name; secret values are never written to PeterCodex state.
 - **No dangerous bypass.** PeterCodex never uses `--dangerously-bypass-approvals-and-sandbox`.
 
 ## Requirements
@@ -52,6 +54,25 @@ python plugins/petercodex-plugin/scripts/petercodex.py plan \
 ```
 
 PeterCodex returns JSON containing a `run_id` and exact Codex `session_id`.
+
+### ProxyCLI / other OpenAI-compatible providers
+
+PeterCodex can define a Codex `model_provider` per run without changing the user's global `config.toml`. Pass the API key through an environment variable; PeterCodex stores only the environment-variable **name**, never its value.
+
+```bash
+export PETERCODEX_PROXYCLI_API_KEY="..."
+python plugins/petercodex-plugin/scripts/petercodex.py plan \
+  --workspace /absolute/path/to/repo \
+  --prompt "Implement the requested fix and validate it." \
+  --model antigravity-gemini-3.7-flash-high \
+  --provider-id proxycli \
+  --provider-name ProxyCLI \
+  --provider-base-url http://127.0.0.1:8317/v1 \
+  --provider-api-key-env PETERCODEX_PROXYCLI_API_KEY \
+  --provider-wire-api responses
+```
+
+The provider definition, model name, and exact `session_id` are persisted in the run. `execute` and `review` reuse them automatically. The same flags work with other OpenAI-compatible providers; use `--provider-wire-api chat` only when that provider requires Chat Completions rather than Responses.
 
 ### 2. Execute the approved plan
 
@@ -167,7 +188,7 @@ Authenticated live smoke test:
 python tests/live_smoke.py
 ```
 
-The live smoke creates a disposable Git repository, verifies that Plan does not dirty it, executes a one-file change through the same persisted Codex session, checks the exact resulting file and Git status, and runs an independent Review.
+The live smoke creates a disposable Git repository, verifies that Plan does not dirty it, executes a one-file change through the same persisted Codex session, checks the exact resulting file and Git status, and runs an independent Review. It also accepts the custom-provider flags above, so ProxyCLI or another OpenAI-compatible gateway can be tested end-to-end without modifying global Codex configuration.
 
 ## License
 

@@ -45,6 +45,11 @@ def main() -> int:
     parser.add_argument("--skip-review", action="store_true")
     parser.add_argument("--model")
     parser.add_argument("--local-provider", choices=["ollama", "lmstudio"])
+    parser.add_argument("--provider-id")
+    parser.add_argument("--provider-name")
+    parser.add_argument("--provider-base-url")
+    parser.add_argument("--provider-api-key-env")
+    parser.add_argument("--provider-wire-api", choices=["responses", "chat"])
     args = parser.parse_args()
 
     if not shutil.which("git"):
@@ -87,6 +92,16 @@ def main() -> int:
             plan_cmd.extend(["--model", args.model])
         if args.local_provider:
             plan_cmd.extend(["--local-provider", args.local_provider])
+        if args.provider_id:
+            plan_cmd.extend(["--provider-id", args.provider_id])
+        if args.provider_name:
+            plan_cmd.extend(["--provider-name", args.provider_name])
+        if args.provider_base_url:
+            plan_cmd.extend(["--provider-base-url", args.provider_base_url])
+        if args.provider_api_key_env:
+            plan_cmd.extend(["--provider-api-key-env", args.provider_api_key_env])
+        if args.provider_wire_api:
+            plan_cmd.extend(["--provider-wire-api", args.provider_wire_api])
         plan = parse_json(run(plan_cmd, timeout=900).stdout)
         if plan.get("state") != "PLANNED":
             raise RuntimeError(f"Unexpected plan state: {plan}")

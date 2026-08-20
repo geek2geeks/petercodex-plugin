@@ -1,6 +1,6 @@
 {
   "name": "petercodex-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Use OpenAI Codex as a supervised coding worker with durable plan, execute, and review phases.",
   "author": {
     "name": "geek2geeks",

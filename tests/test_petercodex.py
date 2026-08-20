@@ -48,6 +48,35 @@ class PeterCodexUnitTests(unittest.TestCase):
         )
         self.assertEqual([], petercodex.codex_provider_args(None, None))
 
+    def test_custom_provider_args_use_env_key_without_secret_value(self) -> None:
+        provider = {
+            "id": "proxycli",
+            "name": "ProxyCLI",
+            "base_url": "http://127.0.0.1:8317/v1",
+            "api_key_env": "PETERCODEX_PROXYCLI_API_KEY",
+            "wire_api": "responses",
+        }
+        with mock.patch.dict("os.environ", {"PETERCODEX_PROXYCLI_API_KEY": "secret-test-value"}, clear=False):
+            args = petercodex.codex_provider_args("antigravity-gemini-3.7-flash-high", None, provider)
+        joined = " ".join(args)
+        self.assertIn('model_provider="proxycli"', joined)
+        self.assertIn('model_providers.proxycli.base_url="http://127.0.0.1:8317/v1"', joined)
+        self.assertIn('model_providers.proxycli.env_key="PETERCODEX_PROXYCLI_API_KEY"', joined)
+        self.assertIn('model_providers.proxycli.wire_api="responses"', joined)
+        self.assertNotIn("secret-test-value", joined)
+
+    def test_custom_provider_rejects_missing_api_key_env(self) -> None:
+        provider = {
+            "id": "proxycli",
+            "name": "ProxyCLI",
+            "base_url": "http://127.0.0.1:8317/v1",
+            "api_key_env": "PETERCODEX_MISSING_KEY",
+            "wire_api": "responses",
+        }
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with self.assertRaises(petercodex.PeterCodexError):
+                petercodex.codex_provider_args("model", None, provider)
+
     def test_execution_file_evidence_matches_clean_git_delta(self) -> None:
         evidence = petercodex.execution_file_evidence(
             {"changed_paths": []},
@@ -76,6 +105,35 @@ class PeterCodexUnitTests(unittest.TestCase):
         self.assertTrue(petercodex.execution_result_evidence(good)["passes"])
         self.assertFalse(petercodex.execution_result_evidence(bad)["passes"])
 
+    def test_structured_fallback_accepts_fenced_json_agent_message(self) -> None:
+        required = {"summary", "ready_to_execute"}
+        events = [
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "agent_message",
+                    "text": '```json\n{"summary":"ok","ready_to_execute":true}\n```',
+                },
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.json"
+            result = petercodex.load_structured_result(path, events, required)
+            self.assertEqual({"summary": "ok", "ready_to_execute": True}, result)
+            self.assertEqual(result, json.loads(path.read_text(encoding="utf-8")))
+
+    def test_structured_fallback_rejects_missing_required_keys(self) -> None:
+        events = [
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": '{"summary":"ok"}'},
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.json"
+            with self.assertRaises(petercodex.PeterCodexError):
+                petercodex.load_structured_result(path, events, {"summary", "ready_to_execute"})
+
     def test_drift_detection_is_orthogonal(self) -> None:
         baseline = {"git_root": "/repo", "head": "aaa", "status_digest": "111"}
         same = dict(baseline)
@@ -98,7 +156,7 @@ class PeterCodexUnitTests(unittest.TestCase):
             (REPO_ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8")
         )
         self.assertEqual("petercodex-plugin", manifest["name"])
-        self.assertEqual("0.1.0", manifest["version"])
+        self.assertEqual("0.1.1", manifest["version"])
         self.assertEqual("petercodex", marketplace["name"])
         self.assertEqual("petercodex-plugin", marketplace["plugins"][0]["name"])
         self.assertEqual("./plugins/petercodex-plugin", marketplace["plugins"][0]["source"]["path"])
