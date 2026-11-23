@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      live_smoke:
+        description: "Run the authenticated Codex live smoke test (requires Codex auth on the runner)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: [self-hosted, Windows, X64, petercodex-plugin]
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          check-latest: false
+      - name: Show toolchain
+        run: |
+          python --version
+          git --version
+          Write-Host "Runner: $env:RUNNER_OS/$env:RUNNER_ARCH"
+          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+      - name: Syntax check (compileall)
+        run: python -m compileall -q plugins/petercodex-plugin/scripts tests
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: CLI help smoke
+        run: python plugins/petercodex-plugin/scripts/petercodex.py --help
+      - name: CLI version smoke
+        run: python plugins/petercodex-plugin/scripts/petercodex.py --version
+
+  live-smoke:
+    name: Live Codex smoke (manual, opt-in)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.live_smoke == true }}
+    runs-on: [self-hosted, Windows, X64, petercodex-plugin]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+          check-latest: false
+      - name: Verify Codex CLI
+        run: codex --version
+      - name: Live smoke (Plan -> Execute -> Review)
+        run: python tests/live_smoke.py
